@@ -1,5 +1,6 @@
 import os
 import re
+import requests
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_bcrypt import Bcrypt
@@ -31,6 +32,25 @@ jwt = JWTManager(app)
 # Inicialización automática de las tablas en la base de datos
 with app.app_context():
     db.create_all()
+
+
+# --- CONSUMO DE API EXTERNA (PROXY) ---
+def obtener_clima_actual():
+    lat = os.getenv('LATITUD', '-34.61')
+    lon = os.getenv('LONGITUD', '-58.38')
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+
+    try:
+        # Petición externa con timeout estricto para mitigar caídas del servicio externo
+        respuesta = requests.get(url, timeout=3.0)
+        if respuesta.status_code == 200:
+            datos = respuesta.get_json() if hasattr(respuesta, 'get_json') else respuesta.json()
+            temp = datos.get('current_weather', {}).get('temperature', 'N/A')
+            return f"{temp}°C"
+    except Exception:
+        # Fallback tolerante a fallas para no bloquear la regla de negocio principal
+        return "Clima no disponible"
+    return "Clima no disponible"
 
 
 # --- ENDPOINTS DE AUTENTICACIÓN ---
@@ -227,22 +247,23 @@ def registrar_acceso():
     try:
         socio = Socio.query.get(socio_id_input)
 
-        # Regla de negocio: Validación de existencia
         if not socio:
             nuevo_acceso = Acceso(socio_id=socio_id_input, resultado="rechazado", motivo="Socio no existe")
             db.session.add(nuevo_acceso)
             db.session.commit()
             return jsonify({"resultado": "rechazado", "motivo": "Socio no existe"}), 404
 
-        # Regla de negocio: Validación de estado administrativo
         if socio.estado.lower() == "inactivo":
             nuevo_acceso = Acceso(socio_id=socio.id, resultado="rechazado", motivo="Socio inactivo")
             db.session.add(nuevo_acceso)
             db.session.commit()
             return jsonify({"resultado": "rechazado", "motivo": "Socio inactivo"}), 400
 
-        # Regla de negocio: Acceso permitido si cumple las condiciones
-        nuevo_acceso = Acceso(socio_id=socio.id, resultado="permitido", motivo=None)
+        # Consumo e internalización del dato de la API externa
+        clima_info = obtener_clima_actual()
+        motivo_exito = f"Ingreso normal - Temp: {clima_info}"
+
+        nuevo_acceso = Acceso(socio_id=socio.id, resultado="permitido", motivo=motivo_exito)
         db.session.add(nuevo_acceso)
         db.session.commit()
 
