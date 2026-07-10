@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required
 from dotenv import load_dotenv
-from models import db, Usuario, Socio
+from models import db, Usuario, Socio, Acceso
 
 # Carga de variables de entorno
 load_dotenv()
@@ -211,3 +211,61 @@ def dar_baja_socio(id):
     except Exception:
         db.session.rollback()
         return jsonify({"error": "Error interno al procesar la baja del socio"}), 500
+
+
+# --- ENDPOINTS DE CONTROL DE ACCESOS ---
+
+@app.post('/api/accesos')
+def registrar_acceso():
+    data = request.get_json()
+
+    if not data or 'socio_id' not in data:
+        return jsonify({"error": "El parametro socio_id es obligatorio"}), 400
+
+    socio_id_input = data['socio_id']
+
+    try:
+        socio = Socio.query.get(socio_id_input)
+
+        # Regla de negocio: Validación de existencia
+        if not socio:
+            nuevo_acceso = Acceso(socio_id=socio_id_input, resultado="rechazado", motivo="Socio no existe")
+            db.session.add(nuevo_acceso)
+            db.session.commit()
+            return jsonify({"resultado": "rechazado", "motivo": "Socio no existe"}), 404
+
+        # Regla de negocio: Validación de estado administrativo
+        if socio.estado.lower() == "inactivo":
+            nuevo_acceso = Acceso(socio_id=socio.id, resultado="rechazado", motivo="Socio inactivo")
+            db.session.add(nuevo_acceso)
+            db.session.commit()
+            return jsonify({"resultado": "rechazado", "motivo": "Socio inactivo"}), 400
+
+        # Regla de negocio: Acceso permitido si cumple las condiciones
+        nuevo_acceso = Acceso(socio_id=socio.id, resultado="permitido", motivo=None)
+        db.session.add(nuevo_acceso)
+        db.session.commit()
+
+        return jsonify(nuevo_acceso.to_dict()), 201
+
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Error interno al procesar el acceso"}), 500
+
+
+@app.get('/api/accesos')
+def listar_accesos():
+    socio_id_query = request.args.get('socio_id')
+
+    try:
+        if socio_id_query:
+            if not socio_id_query.isdigit():
+                return jsonify({"error": "El parametro socio_id de busqueda debe ser numerico"}), 400
+            accesos = Acceso.query.filter_by(socio_id=int(socio_id_query)).all()
+        else:
+            accesos = Acceso.query.all()
+
+        return jsonify([acceso.to_dict() for acceso in accesos]), 200
+
+    except Exception:
+        return jsonify({"error": "Error interno al recuperar el historial de accesos"}), 500
