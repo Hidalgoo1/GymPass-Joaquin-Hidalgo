@@ -290,3 +290,6 @@ def listar_accesos():
 
     except Exception:
         return jsonify({"error": "Error interno al recuperar el historial de accesos"}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
