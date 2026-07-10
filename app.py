@@ -1,10 +1,11 @@
 import os
+import re
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required
 from dotenv import load_dotenv
-from models import db, Usuario
+from models import db, Usuario, Socio
 
 # Carga de variables de entorno
 load_dotenv()
@@ -17,6 +18,10 @@ app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=2)
+
+# Parámetros globales de validación
+EMAIL_REGEX = r'^[\w\.-]+@[\w\.-]+\.\w+$'
+PLANES_PERMITIDOS = ['mensual', 'trimestral', 'anual']
 
 # Inicialización de extensiones
 db.init_app(app)
@@ -81,3 +86,128 @@ def login_staff():
 
     except Exception:
         return jsonify({"error": "Error interno del servidor al loguear"}), 500
+
+
+# --- ENDPOINTS CRUD DE SOCIOS ---
+
+@app.get('/api/socios')
+def listar_socios():
+    try:
+        socios = Socio.query.all()
+        return jsonify([socio.to_dict() for socio in socios]), 200
+    except Exception:
+        return jsonify({"error": "Error interno al recuperar la lista de socios"}), 500
+
+
+@app.get('/api/socios/<int:id>')
+def obtener_socio(id):
+    try:
+        socio = Socio.query.get(id)
+        if not socio:
+            return jsonify({"error": "Socio no encontrado"}), 404
+        return jsonify(socio.to_dict()), 200
+    except Exception:
+        return jsonify({"error": "Error interno al buscar el socio"}), 500
+
+
+@app.post('/api/socios')
+@jwt_required()
+def crear_socio():
+    data = request.get_json()
+
+    if not data or not all(k in data for k in ('nombre', 'email', 'dni', 'plan')):
+        return jsonify({"error": "Datos obligatorios incompletos"}), 400
+
+    nombre = data['nombre'].strip()
+    email = data['email'].strip()
+    dni = data['dni'].strip()
+    plan = data['plan'].strip().lower()
+
+    if not re.match(EMAIL_REGEX, email):
+        return jsonify({"error": "Formato de email invalido"}), 400
+
+    if not dni.isdigit():
+        return jsonify({"error": "DNI invalido, debe contener solo numeros"}), 400
+
+    if plan not in PLANES_PERMITIDOS:
+        return jsonify({"error": f"Plan invalido. Permitidos: {', '.join(PLANES_PERMITIDOS)}"}), 400
+
+    try:
+        if Socio.query.filter_by(email=email).first():
+            return jsonify({"error": "El email ya se encuentra registrado"}), 409
+
+        nuevo_socio = Socio(nombre=nombre, email=email, dni=dni, plan=plan, estado="activo")
+        db.session.add(nuevo_socio)
+        db.session.commit()
+        return jsonify(nuevo_socio.to_dict()), 201
+
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Error interno al registrar el socio"}), 500
+
+
+@app.patch('/api/socios/<int:id>')
+@jwt_required()
+def modificar_socio(id):
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No se enviaron datos para actualizar"}), 400
+
+    try:
+        socio = Socio.query.get(id)
+        if not socio:
+            return jsonify({"error": "Socio no encontrado"}), 404
+
+        if 'nombre' in data:
+            socio.nombre = data['nombre'].strip()
+
+        if 'email' in data:
+            email = data['email'].strip()
+            if not re.match(EMAIL_REGEX, email):
+                return jsonify({"error": "Formato de email invalido"}), 400
+            existente = Socio.query.filter_by(email=email).first()
+            if existente and existente.id != id:
+                return jsonify({"error": "El email ya pertenece a otro socio"}), 409
+            socio.email = email
+
+        if 'dni' in data:
+            dni = data['dni'].strip()
+            if not dni.isdigit():
+                return jsonify({"error": "DNI invalido, debe contener solo numeros"}), 400
+            socio.dni = dni
+
+        if 'plan' in data:
+            plan = data['plan'].strip().lower()
+            if plan not in PLANES_PERMITIDOS:
+                return jsonify({"error": f"Plan invalido. Permitidos: {', '.join(PLANES_PERMITIDOS)}"}), 400
+            socio.plan = plan
+
+        if 'estado' in data:
+            estado = data['estado'].strip().lower()
+            if estado not in ['activo', 'inactivo']:
+                return jsonify({"error": "Estado invalido. Permitidos: activo, inactivo"}), 400
+            socio.estado = estado
+
+        db.session.commit()
+        return jsonify(socio.to_dict()), 200
+
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Error interno al actualizar el socio"}), 500
+
+
+@app.delete('/api/socios/<int:id>')
+@jwt_required()
+def dar_baja_socio(id):
+    try:
+        socio = Socio.query.get(id)
+        if not socio:
+            return jsonify({"error": "Socio no encontrado"}), 404
+
+        socio.estado = "inactivo"
+        db.session.commit()
+        return jsonify({"mensaje": f"Socio con ID {id} dado de baja exitosamente"}), 200
+
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Error interno al procesar la baja del socio"}), 500
